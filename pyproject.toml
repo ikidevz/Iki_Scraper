@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "iki-scraper"
+version = "0.1.0"
+description = "Advanced asynchronous web scraping framework"
+authors = [
+    {name = "IkiDevz"}
+]
+requires-python = ">=3.10"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[project.scripts]
+iki-scraper = "Iki_Scraper.app:main"
