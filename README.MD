@@ -12,7 +12,7 @@
 
 ---
 
-## What's new in v2
+## Features
 
 | #   | Feature                                                         | Flag / method                | Pattern             |
 | --- | --------------------------------------------------------------- | ---------------------------- | ------------------- |
@@ -260,7 +260,7 @@ scrape_pipeline()      ← fixed, do not override
   navigate()           ← fixed
   after_navigate()     ← hook → SPA wait, CAPTCHA check
   interact()           ← fixed (mouse + scroll + delay)
-  collect_pages()      ← hook → pagination URLs          ← NEW in v2
+  collect_pages()      ← hook → pagination URLs
   extract()            ← fixed
   after_extract()      ← hook → screenshots, downloads
   persist()            ← fixed (Strategy + Repository)
@@ -273,8 +273,8 @@ Abstract persistence. Three concrete implementations, composable.
 ```
 OutputRepository (ABC)
 ├── LocalFileRepository    →  disk files (default)
-├── SQLiteRepository       →  SQLite db  (new v2)
-└── CompositeRepository    →  both simultaneously (new v2)
+├── SQLiteRepository       →  SQLite db
+└── CompositeRepository    →  both simultaneously
 ```
 
 ### Facade — `ScraperFacade`
@@ -286,9 +286,9 @@ facade = ScraperFacade(cfg)
 facade.scrape_one(url)
 facade.scrape_many(urls)
 facade.scrape_file(path)
-facade.scrape_sitemap(base_url)   # new v2
+facade.scrape_sitemap(base_url)
 facade.add_observer(observer)
-facade.slow_pages                 # property, new v2
+facade.slow_pages
 ```
 
 ---
