@@ -2,8 +2,7 @@
 
 ![Python](https://img.shields.io/badge/Python-3.10%2B-blue?style=flat-square&logo=python)
 ![Playwright](https://img.shields.io/badge/Playwright-async-green?style=flat-square)
-![Patterns](https://img.shields.io/badge/Design%20Patterns-7-purple?style=flat-square)
-![Features](https://img.shields.io/badge/New%20Features-9-coral?style=flat-square)
+![Features](https://img.shields.io/badge/Features-9-coral?style=flat-square)
 ![Tests](https://img.shields.io/badge/Tests-67%20passing-teal?style=flat-square)
 ![License](https://img.shields.io/badge/License-MIT-yellow?style=flat-square)
 
@@ -12,7 +11,7 @@
 
 ---
 
-## Features
+## What's new in v2
 
 | #   | Feature                                                         | Flag / method                | Pattern             |
 | --- | --------------------------------------------------------------- | ---------------------------- | ------------------- |
@@ -75,7 +74,7 @@ from Iki_Scraper import ScraperFacade, ScraperConfig
 facade = ScraperFacade()
 facade.scrape_one("https://example.com")
 
-# ── With parsing + SQLite ─────────────────────────────────
+# ── With BeautifulSoup parsing + SQLite ───────────────────
 cfg = ScraperConfig(use_parsing=True, use_sqlite=True)
 ScraperFacade(cfg).scrape_many(["https://a.com", "https://b.com"])
 
@@ -92,32 +91,153 @@ facade.scrape_many(["https://a.com", "https://b.com"])
 print(facade.slow_pages)   # [{"url": "...", "elapsed_s": 12.4}]
 ```
 
+### Scraping HTML with BeautifulSoup — `scrape_one` and `scrape_many`
+
+BeautifulSoup is already built into the framework. You activate it with a single flag: `use_parsing=True`. No extra code or imports needed — the scraper handles everything internally.
+
+**What gets extracted automatically:**
+
+| Field              | Description                                                      |
+| ------------------ | ---------------------------------------------------------------- |
+| `title`            | `<title>` tag text                                               |
+| `meta_description` | `<meta name="description">` content                              |
+| `text_preview`     | Clean body text, noise tags stripped, capped at 5 000 chars      |
+| `tables`           | Every `<table>` converted to a list of row dicts keyed by header |
+
+**`scrape_one` with BeautifulSoup:**
+
+```python
+from Iki_Scraper import ScraperFacade, ScraperConfig
+import json
+from pathlib import Path
+
+cfg = ScraperConfig(
+    use_parsing=True,   # ← enables BeautifulSoupStrategy
+    save_html=True,     # optional: also save raw .html file to disk
+    output_dir="output",
+)
+
+summary = ScraperFacade(cfg).scrape_one("https://example.com")
+
+# Read the parsed meta back from disk
+meta_path = summary["results"][0]["meta_file"]
+meta = json.loads(Path(meta_path).read_text())
+
+print(meta["title"])            # "Example Domain"
+print(meta["meta_description"]) # "..."
+print(meta["text_preview"])     # first 5 000 chars of clean body text
+print(meta["tables"])           # list of tables, each a list of row dicts
+```
+
+**`scrape_many` with BeautifulSoup:**
+
+```python
+from Iki_Scraper import ScraperFacade, ScraperConfig
+import json
+from pathlib import Path
+
+urls = [
+    "https://example.com",
+    "https://httpbin.org/html",
+    "https://books.toscrape.com",
+]
+
+cfg = ScraperConfig(
+    use_parsing=True,
+    save_html=True,
+    output_dir="output",
+    max_concurrency=3,      # scrape up to 3 pages in parallel
+)
+
+summary = ScraperFacade(cfg).scrape_many(urls)
+
+# Iterate over every result and print parsed data
+for result in summary["results"]:
+    if result["status"] != "success":
+        print(f"  skipped / errored: {result['url']}")
+        continue
+
+    meta = json.loads(Path(result["meta_file"]).read_text())
+    print(f"\n── {result['url']}")
+    print(f"   title       : {meta.get('title')}")
+    print(f"   description : {meta.get('meta_description')}")
+    print(f"   text preview: {meta.get('text_preview', '')[:120]}…")
+    if meta.get("tables"):
+        print(f"   tables found: {len(meta['tables'])}")
+        print(f"   first row   : {meta['tables'][0][0]}")
+```
+
+**Working with the parsed data directly in memory:**
+
+The `meta_file` path on disk always contains the full parsed result. If you prefer to skip the file read, just parse the HTML yourself after the scrape using the same strategy the framework uses:
+
+```python
+from Iki_Scraper import ScraperFacade, ScraperConfig
+from Iki_Scraper.patterns import BeautifulSoupStrategy
+import json
+from pathlib import Path
+
+cfg = ScraperConfig(save_html=True, output_dir="output")
+summary = ScraperFacade(cfg).scrape_one("https://example.com")
+
+# Read the raw HTML from disk and re-parse manually
+html_path = summary["results"][0]["html_file"]
+html = Path(html_path).read_text(encoding="utf-8")
+
+parser = BeautifulSoupStrategy()
+data = parser.parse(html, "https://example.com")
+
+print(data["title"])
+print(data["text_preview"])
+print(data.get("tables", []))
+```
+
+**Extracting tables specifically:**
+
+```python
+from Iki_Scraper import ScraperFacade, ScraperConfig
+import json
+from pathlib import Path
+
+cfg = ScraperConfig(use_parsing=True, output_dir="output")
+summary = ScraperFacade(cfg).scrape_one("https://en.wikipedia.org/wiki/Python_(programming_language)")
+
+meta = json.loads(Path(summary["results"][0]["meta_file"]).read_text())
+
+for i, table in enumerate(meta.get("tables", [])):
+    print(f"\nTable {i + 1} — {len(table)} rows")
+    for row in table[:3]:   # print first 3 rows of each table
+        print(" ", row)
+```
+
+> **Note:** `tables` is omitted from `_meta.json` entirely when the page has no `<table>` elements. Always use `.get("tables", [])` to avoid `KeyError`.
+
 ### CLI
 
 ```bash
 # single URL, full features on
-python Iki_Scraper.py --url https://example.com \
+iki-scraper --url https://example.com \
   --use-parsing --resumable --use-sqlite --slow-threshold 8
 
 # batch file, domain rate-limited, retries enabled
-python Iki_Scraper.py --file urls.txt \
+iki-scraper --file urls.txt \
   --concurrency 4 --domain-rate 3.0 --max-retries 3
 
 # discover and scrape an entire site via sitemap
-python Iki_Scraper.py --sitemap https://example.com --use-parsing
+iki-scraper --sitemap https://example.com --use-parsing
 
 # skip pages whose content hasn't changed since last run
-python Iki_Scraper.py --file urls.txt --skip-unchanged
+iki-scraper --file urls.txt --skip-unchanged
 ```
 
 ---
 
 ## 3. Architecture
 
-### Class map — single file, layered by dependency
+### Class map — layered by dependency
 
 ```
-Iki_Scraper.py
+Iki_Scraper/
 │
 ├── AppLogger                     Singleton — one logger, shared everywhere
 ├── ScraperConfig                 Dataclass — all knobs in one place
@@ -260,7 +380,7 @@ scrape_pipeline()      ← fixed, do not override
   navigate()           ← fixed
   after_navigate()     ← hook → SPA wait, CAPTCHA check
   interact()           ← fixed (mouse + scroll + delay)
-  collect_pages()      ← hook → pagination URLs
+  collect_pages()      ← hook → pagination URLs          ← NEW in v2
   extract()            ← fixed
   after_extract()      ← hook → screenshots, downloads
   persist()            ← fixed (Strategy + Repository)
@@ -273,8 +393,8 @@ Abstract persistence. Three concrete implementations, composable.
 ```
 OutputRepository (ABC)
 ├── LocalFileRepository    →  disk files (default)
-├── SQLiteRepository       →  SQLite db
-└── CompositeRepository    →  both simultaneously
+├── SQLiteRepository       →  SQLite db  (new v2)
+└── CompositeRepository    →  both simultaneously (new v2)
 ```
 
 ### Facade — `ScraperFacade`
@@ -286,9 +406,9 @@ facade = ScraperFacade(cfg)
 facade.scrape_one(url)
 facade.scrape_many(urls)
 facade.scrape_file(path)
-facade.scrape_sitemap(base_url)
+facade.scrape_sitemap(base_url)   # new v2
 facade.add_observer(observer)
-facade.slow_pages
+facade.slow_pages                 # property, new v2
 ```
 
 ---
@@ -563,7 +683,7 @@ scraper.db                          ← SQLite db (if use_sqlite=True)
 ## 8. CLI reference
 
 ```
-python Iki_Scraper.py [MODE] [OPTIONS]
+iki-scraper [MODE] [OPTIONS]
 
 Modes (pick one):
   --url URL               Single URL
@@ -599,23 +719,21 @@ Logging:
 
 ```bash
 # Unit tests — no browser, no network, < 2 s
-python test_Iki_Scraper.py unit
+python tests/test_unit.py
 
 # Pattern contract tests — no browser, < 1 s
-python test_Iki_Scraper.py patterns
+python tests/test_patterns.py
 
 # Integration tests — real Chromium + public URLs, ~40 s
-python test_Iki_Scraper.py integration
-
-# All 67 tests
-python test_Iki_Scraper.py
+# Requires: playwright install chromium
+python tests/test_integration.py
 ```
 
-| Group       | Tests | Browser | Network |
-| ----------- | ----- | ------- | ------- |
-| unit        | 45    | ✗       | ✗       |
-| patterns    | 9     | ✗       | ✗       |
-| integration | 13    | ✓       | ✓       |
+| File                  | Tests | Browser | Network |
+| --------------------- | ----- | ------- | ------- |
+| `test_unit.py`        | 45    | ✗       | ✗       |
+| `test_patterns.py`    | 9     | ✗       | ✗       |
+| `test_integration.py` | 13    | ✓       | ✓       |
 
 ---
 
@@ -770,18 +888,18 @@ For production, swap `ProxyManager._fetch_pool()` to return hosts from Bright Da
 
 ## 12. Troubleshooting
 
-| Symptom                              | Likely cause                 | Fix                                                                     |
-| ------------------------------------ | ---------------------------- | ----------------------------------------------------------------------- |
-| `TimeoutError` on many URLs          | Site slow or blocking        | Increase `page_timeout_ms`; enable proxies                              |
-| Empty HTML                           | JS-heavy SPA                 | Change `wait_until` to `"networkidle"` in `page.goto()`                 |
-| `ERR_PROXY_CONNECTION_FAILED`        | Dead free proxy              | Normal — they auto-rotate                                               |
-| All pages show as `unchanged`        | Dynamic content (timestamps) | Disable `skip_unchanged` for that site                                  |
-| Checkpoint not clearing between runs | `resumable=True` still set   | Call `CheckpointStore(output_dir).clear()` or delete `.checkpoint.json` |
-| SQLite `OperationalError`            | DB file locked               | Only one `ScraperFacade` instance per db file                           |
-| Sitemap returns 0 URLs               | Site uses non-standard path  | Pass the sitemap URL directly to `SitemapDiscovery().discover()`        |
-| High RAM                             | Too many contexts            | Reduce `max_concurrency`                                                |
-| CAPTCHA / 403                        | Fingerprint detected         | `headless=False`, reduce concurrency, better proxies                    |
-| `RuntimeError: loop already running` | Jupyter without patch        | Import `Iki_Scraper` — triggers `nest_asyncio.apply()`                  |
+| Symptom                              | Likely cause                 | Fix                                                                        |
+| ------------------------------------ | ---------------------------- | -------------------------------------------------------------------------- |
+| `TimeoutError` on many URLs          | Site slow or blocking        | Increase `page_timeout_ms`; enable proxies                                 |
+| Empty HTML                           | JS-heavy SPA                 | Change `wait_until` to `"networkidle"` in `page.goto()`                    |
+| `ERR_PROXY_CONNECTION_FAILED`        | Dead free proxy              | Normal — they auto-rotate                                                  |
+| All pages show as `unchanged`        | Dynamic content (timestamps) | Disable `skip_unchanged` for that site                                     |
+| Checkpoint not clearing between runs | `resumable=True` still set   | Call `CheckpointStore(output_dir).clear()` or delete `.checkpoint.json`    |
+| SQLite `OperationalError`            | DB file locked               | Only one `ScraperFacade` instance per db file                              |
+| Sitemap returns 0 URLs               | Site uses non-standard path  | Pass the sitemap URL directly to `SitemapDiscovery().discover()`           |
+| High RAM                             | Too many contexts            | Reduce `max_concurrency`                                                   |
+| CAPTCHA / 403                        | Fingerprint detected         | `headless=False`, reduce concurrency, better proxies                       |
+| `RuntimeError: loop already running` | Jupyter without patch        | Add `import nest_asyncio; nest_asyncio.apply()` before any `asyncio.run()` |
 
 ---
 
@@ -789,49 +907,42 @@ For production, swap `ProxyManager._fetch_pool()` to return hosts from Bright Da
 
 ```
 .
-Iki-Scraper
-├── src
-│   ├── Iki_Scraper
-│   │   ├── core
-│   │   │   ├── __init__.py
-│   │   │   ├── orchestrator.py
-│   │   │   └── standard_scraper.py
-│   │   ├── infrastructure
-│   │   │   ├── __init__.py
-│   │   │   ├── context_factory.py
-│   │   │   ├── domain_rate_limiter.py
-│   │   │   ├── human_behavior.py
-│   │   │   ├── proxy_manager.py
-│   │   │   └── sitemap_discovery.py
-│   │   ├── patterns
-│   │   │   ├── __init__.py
-│   │   │   ├── base_scraper.py
-│   │   │   ├── change_detector.py
-│   │   │   ├── checkpoint.py
-│   │   │   ├── logger.py
-│   │   │   ├── observer.py
-│   │   │   ├── parse_strategy.py
-│   │   │   ├── repository.py
-│   │   │   └── retry_policy.py
-│   │   ├── __init__.py
-│   │   ├── app.py
-│   │   ├── config.py
-│   │   └── facade.py
-│   └── iki_scraper.egg-info
-│       ├── dependency_links.txt
-│       ├── entry_points.txt
-│       ├── PKG-INFO
-│       ├── SOURCES.txt
-│       └── top_level.txt
-├── tests
-│   ├── test_integration.py
-│   ├── test_patterns.py
-│   └── test_unit.py
-├── .gitignore
-├── LICENSE.MD
-├── pyproject.toml
-├── README.MD
-└── structure.py
+├── pyproject.toml              Package metadata + iki-scraper CLI entry point
+├── README.MD                   This file
+├── structure.py                Utility: prints the directory tree
+│
+├── src/
+│   └── Iki_Scraper/
+│       ├── __init__.py         Public API re-exports
+│       ├── app.py              CLI (argparse → ScraperFacade)
+│       ├── config.py           ScraperConfig dataclass
+│       ├── facade.py           ScraperFacade — main entry point
+│       │
+│       ├── core/
+│       │   ├── orchestrator.py       ScraperOrchestrator
+│       │   └── standard_scraper.py   StandardScraper
+│       │
+│       ├── infrastructure/
+│       │   ├── context_factory.py    BrowserContextFactory
+│       │   ├── domain_rate_limiter.py DomainRateLimiter
+│       │   ├── human_behavior.py     HumanBehaviour
+│       │   ├── proxy_manager.py      ProxyManager
+│       │   └── sitemap_discovery.py  SitemapDiscovery
+│       │
+│       └── patterns/
+│           ├── base_scraper.py       BaseScraper — Template Method
+│           ├── change_detector.py    ChangeDetector — SHA-256
+│           ├── checkpoint.py         CheckpointStore
+│           ├── logger.py             AppLogger — Singleton
+│           ├── observer.py           EventBus + observers
+│           ├── parse_strategy.py     ParseStrategy hierarchy (BS4 lives here)
+│           ├── repository.py         OutputRepository hierarchy
+│           └── retry_policy.py       RetryPolicy
+│
+└── tests/
+    ├── test_unit.py            45 unit tests (no browser, no network)
+    ├── test_patterns.py        9 pattern contract tests
+    └── test_integration.py     13 integration tests (Chromium + network)
 ```
 
 ---
