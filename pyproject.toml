@@ -1,21 +1,80 @@
 [build-system]
-requires = ["setuptools>=61"]
-build-backend = "setuptools.build_meta"
+requires = ["hatchling>=1.25.0"]
+build-backend = "hatchling.build"
 
 [project]
 name = "iki-scraper"
 version = "0.1.0"
-description = "Advanced asynchronous web scraping framework"
-authors = [
-    {name = "IkiDevz"}
-]
+description = "Advanced asynchronous web scraping framework built on Playwright."
+readme = "README.md"
 requires-python = ">=3.10"
 
-[tool.setuptools]
-package-dir = {"" = "src"}
+license = { text = "MIT" }
 
-[tool.setuptools.packages.find]
-where = ["src"]
+authors = [
+    { name = "Iki", email = "ikigamidevs@gmail.com" }
+]
+
+keywords = [
+    "scraping",
+    "web-scraping",
+    "playwright",
+    "crawler",
+    "automation",
+    "html-parsing",
+]
+
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Internet :: WWW/HTTP",
+    "Topic :: Software Development :: Libraries",
+]
+
+dependencies = [
+    "playwright>=1.52.0",
+    "beautifulsoup4>=4.12.0",
+    "lxml>=5.0.0",
+    "nest-asyncio>=1.6.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-cov>=5.0.0",
+    "mypy>=1.8.0",
+    "ruff>=0.4.0",
+]
 
 [project.scripts]
 iki-scraper = "Iki_Scraper.app:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/Iki_Scraper"]
+
+[tool.hatch.build.targets.sdist]
+include = [
+    "src/Iki_Scraper",
+    "README.md",
+    "LICENSE.MD",
+    "examples.py",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.mypy]
+python_version = "3.10"
+warn_return_any = true
+warn_unused_configs = true
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-v --tb=short"

@@ -1,2 +1,0 @@
-[console_scripts]
-iki-scraper = Iki_Scraper.app:main
