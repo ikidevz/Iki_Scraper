@@ -15,6 +15,7 @@ Sections
   F.  Resilience utilities       — ChangeDetector · CheckpointStore
                                    RetryPolicy · DomainRateLimiter
   G.  Infrastructure             — ProxyManager · SitemapDiscovery
+                                   UrlLoader · BrowserSession
   ── Playwright required below ──────────────────────────────────────
   H.  fetch()                    — single URL
   I.  fetch_many()               — concurrent list
@@ -67,8 +68,8 @@ from Iki_Scraper.patterns.retry_policy import RetryPolicy
 from Iki_Scraper.infrastructure.domain_rate_limiter import DomainRateLimiter
 from Iki_Scraper.infrastructure.proxy_manager import ProxyManager
 from Iki_Scraper.infrastructure.sitemap_discovery import SitemapDiscovery
-from Iki_Scraper.infrastructure.context_factory import BrowserContextFactory
-from Iki_Scraper.core import ScraperOrchestrator, StandardScraper
+from Iki_Scraper.infrastructure.url_loader import UrlLoader
+from Iki_Scraper.core import ScraperOrchestrator, StandardScraper, BrowserSession
 
 # ── Print helpers ──────────────────────────────────────────────────────────────
 
@@ -549,7 +550,8 @@ def section_f_resilience() -> None:
 # ══════════════════════════════════════════════════════════════════════════════
 
 def section_g_infrastructure() -> None:
-    _header("G. Infrastructure — ProxyManager · SitemapDiscovery")
+    _header(
+        "G. Infrastructure — ProxyManager · SitemapDiscovery · UrlLoader · BrowserSession")
 
     async def _infra():
         cfg = ScraperConfig(use_proxies=False)
@@ -581,6 +583,43 @@ def section_g_infrastructure() -> None:
                 f"SitemapDiscovery: exception on bad domain (strict DNS env): {e}")
 
     asyncio.run(_infra())
+
+    # ── UrlLoader ─────────────────────────────────────────────────────────────
+    with tempfile.TemporaryDirectory() as tmp:
+        # .txt — comments and blank lines stripped
+        txt = Path(tmp) / "urls.txt"
+        txt.write_text(
+            "# comment\nhttps://example.com\n\nhttps://httpbin.org/html\n")
+        loaded = UrlLoader.from_file(str(txt))
+        assert loaded == ["https://example.com", "https://httpbin.org/html"]
+        _ok(f"UrlLoader.from_file(.txt): {len(loaded)} URL(s), comments/blanks stripped")
+
+        # .json — list of strings
+        jf = Path(tmp) / "urls.json"
+        jf.write_text(json.dumps(["https://a.com", "https://b.com"]))
+        loaded_j = UrlLoader.from_file(str(jf))
+        assert loaded_j == ["https://a.com", "https://b.com"]
+        _ok(f"UrlLoader.from_file(.json): {len(loaded_j)} URL(s)")
+
+        # .json dict → ValueError
+        bad = Path(tmp) / "bad.json"
+        bad.write_text('{"url": "not-a-list"}')
+        try:
+            UrlLoader.from_file(str(bad))
+            _warn("Expected ValueError — did not raise")
+        except ValueError as e:
+            _ok(f"UrlLoader.from_file: non-list JSON raises ValueError ({e})")
+
+    # ── BrowserSession ────────────────────────────────────────────────────────
+    # BrowserSession is an async context manager used inside the facade's
+    # select* methods. We verify its interface without launching a real browser.
+    cfg = ScraperConfig(headless=True)
+    session = BrowserSession(cfg)
+    opened = session.open("https://example.com")
+    assert opened is session, "open() must return self for 'async with' chaining"
+    assert session._url == "https://example.com"
+    assert hasattr(session, "__aenter__") and hasattr(session, "__aexit__")
+    _ok("BrowserSession: open() returns self, _url set, async context manager interface present")
 
 
 # ══════════════════════════════════════════════════════════════════════════════

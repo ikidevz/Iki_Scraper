@@ -11,6 +11,7 @@ __author__ = "IkiDevz"
 from .core import (
     ScraperOrchestrator,
     StandardScraper,
+    BrowserSession,
 )
 
 # Infrastructure
@@ -20,6 +21,7 @@ from .infrastructure import (
     DomainRateLimiter,
     HumanBehaviour,
     SitemapDiscovery,
+    UrlLoader,
 )
 
 # Patterns
@@ -54,6 +56,7 @@ __all__ = [
     # Core
     "ScraperOrchestrator",
     "StandardScraper",
+    "BrowserSession",
 
     # Infrastructure
     "ProxyManager",
@@ -61,6 +64,7 @@ __all__ = [
     "DomainRateLimiter",
     "HumanBehaviour",
     "SitemapDiscovery",
+    "UrlLoader",
 
     # Patterns
     "AppLogger",

@@ -61,7 +61,7 @@ class ProxyManager:
         all_proxies = set()
 
         async with httpx.AsyncClient(timeout=15) as client:
-            tasks = [self._fetch_from_url(client, url.format(timeout=self._cfg.proxyscrape_timeout))
+            tasks = [self._fetch_from_url(client, url.format(timeout=self._cfg.proxyscrape_timeout_ms))
                      for url in self._SOURCES]
             results = await asyncio.gather(*tasks, return_exceptions=True)
 

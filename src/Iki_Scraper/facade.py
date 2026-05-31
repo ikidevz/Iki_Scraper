@@ -57,12 +57,14 @@ Quick-start
 """
 
 from __future__ import annotations
-from Iki_Scraper.core import ScraperOrchestrator, StandardScraper
+
+from Iki_Scraper.core import ScraperOrchestrator, StandardScraper, BrowserSession
 from Iki_Scraper.infrastructure import (
     SitemapDiscovery,
     ProxyManager,
     DomainRateLimiter,
     BrowserContextFactory,
+    UrlLoader,
 )
 from Iki_Scraper.patterns import (
     AppLogger,
@@ -95,23 +97,7 @@ nest_asyncio.apply()
 log = AppLogger.get()
 
 
-# ── Internal helpers ──────────────────────────────────────────────────────────
-
-def _load_urls_from_file(path: str) -> list[str]:
-    """Parse a .txt (one URL per line, # comments) or .json (list) file."""
-    p = Path(path)
-    if p.suffix == ".json":
-        data = json.loads(p.read_text(encoding="utf-8"))
-        if not isinstance(data, list):
-            raise ValueError(
-                "JSON URL file must contain a list of URL strings.")
-        return [str(u) for u in data]
-    return [
-        line.strip()
-        for line in p.read_text(encoding="utf-8").splitlines()
-        if line.strip() and not line.startswith("#")
-    ]
-
+# ── Internal helper ───────────────────────────────────────────────────────────
 
 def _require_sqlite(cfg: ScraperConfig) -> str:
     """Return the configured sqlite_path, or raise if SQLite is not enabled."""
@@ -238,7 +224,7 @@ class ScraperFacade:
         Raises:
             ValueError: If a .json file does not contain a list.
         """
-        urls = _load_urls_from_file(filepath)
+        urls = UrlLoader.from_file(filepath)
         log.info("fetch_file: loaded %d URL(s) from %s", len(urls), filepath)
         return self._run(urls)
 
@@ -336,23 +322,6 @@ class ScraperFacade:
     # SELECT — live CSS / XPath queries on a real browser page
     # =========================================================================
 
-    async def _open_page(self, url: str):
-        """
-        Internal: launch Chromium, navigate to *url*, and return
-        ``(playwright, browser, page)`` so callers can query then close them.
-        """
-        from playwright.async_api import async_playwright
-        import random
-
-        pw = await async_playwright().start()
-        browser = await pw.chromium.launch(headless=self._cfg.headless)
-        ua = random.choice(self._cfg.user_agents)
-        ctx = await BrowserContextFactory(self._cfg).create(browser, ua, None)
-        page = await ctx.new_page()
-        page.set_default_timeout(self._cfg.page_timeout_ms)
-        await page.goto(url, wait_until="domcontentloaded")
-        return pw, browser, page
-
     def select(
         self,
         url: str,
@@ -364,57 +333,41 @@ class ScraperFacade:
         Open *url* in the browser, find the **first** element matching
         *selector*, and return its text (or an attribute value).
 
-        This is the direct "give me ``p.title``" method.
-
         Examples::
 
-            # inner text of the first element matching the selector
             title = facade.select("https://example.com", "h1")
-
-            # class attribute
-            cls = facade.select("https://example.com", "h1", attribute="class")
-
-            # CSS selector — first matching paragraph
-            text = facade.select("https://books.toscrape.com", "p.description_text")
-
-            # grab href from first link
-            href = facade.select("https://example.com", "a", attribute="href")
+            cls   = facade.select("https://example.com", "h1", attribute="class")
+            href  = facade.select("https://example.com", "a",  attribute="href")
 
         Args:
             url:       The page to open.
-            selector:  Any CSS selector (``"h1"``, ``"p.title"``,
-                       ``"div#main > span"``, ``".price"``, etc.)
-                       or XPath starting with ``"xpath="``.
-            attribute: If given, return that HTML attribute instead of inner
-                       text.  Common values: ``"href"``, ``"src"``,
-                       ``"class"``, ``"data-*"``.
+            selector:  Any CSS selector or XPath starting with ``"xpath="``.
+            attribute: If given, return that HTML attribute instead of inner text.
             wait:      If ``True`` (default), wait up to ``page_timeout_ms``
                        for the element to appear in the DOM before querying.
 
         Returns:
             The matched text / attribute value, or ``None`` if not found.
         """
+        from playwright.async_api import TimeoutError as PlaywrightTimeoutError
+
         async def _run():
-            from playwright.async_api import TimeoutError as PlaywrightTimeoutError
-            pw, browser, page = await self._open_page(url)
-            try:
+            async with BrowserSession(self._cfg).open(url) as page:
                 if wait:
                     try:
                         el = await page.wait_for_selector(
-                            selector,
-                            timeout=self._cfg.page_timeout_ms
-                        ) if wait else await page.query_selector(selector)
+                            selector, timeout=self._cfg.page_timeout_ms
+                        )
                     except PlaywrightTimeoutError:
                         return None
+                else:
+                    el = await page.query_selector(selector)
 
                 if el is None:
                     return None
                 if attribute:
                     return await el.get_attribute(attribute)
                 return (await el.inner_text()).strip()
-            finally:
-                await browser.close()
-                await pw.stop()
 
         result = asyncio.run(_run())
         log.info("select(%r, %r) → %r", url, selector, result)
@@ -434,36 +387,25 @@ class ScraperFacade:
 
         Examples::
 
-            # all paragraph texts on a page
             paragraphs = facade.select_all("https://example.com", "p")
-
-            # all href links
-            links = facade.select_all("https://example.com", "a", attribute="href")
-
-            # first 5 product titles
-            titles = facade.select_all(
+            links      = facade.select_all("https://example.com", "a", attribute="href")
+            titles     = facade.select_all(
                 "https://books.toscrape.com", "article.product_pod h3 a",
                 attribute="title", limit=5
             )
 
-            # all image src URLs
-            imgs = facade.select_all("https://example.com", "img", attribute="src")
-
         Args:
             url:       The page to open.
             selector:  Any CSS selector or XPath starting with ``"xpath="``.
-            attribute: If given, return that HTML attribute for each element
-                       instead of inner text.
-            wait:      If ``True`` (default), wait for the first matching
-                       element to appear before collecting all matches.
+            attribute: If given, return that HTML attribute for each element.
+            wait:      If ``True`` (default), wait for the first matching element.
             limit:     If given, return at most *limit* results.
 
         Returns:
             List of strings (text or attribute values), empty list if none found.
         """
         async def _run():
-            pw, browser, page = await self._open_page(url)
-            try:
+            async with BrowserSession(self._cfg).open(url) as page:
                 if wait:
                     try:
                         await page.wait_for_selector(
@@ -476,16 +418,14 @@ class ScraperFacade:
                     elements = elements[:limit]
                 results: list[str] = []
                 for el in elements:
-                    if attribute:
-                        val = await el.get_attribute(attribute)
-                    else:
-                        val = (await el.inner_text()).strip()
+                    val = (
+                        await el.get_attribute(attribute)
+                        if attribute
+                        else (await el.inner_text()).strip()
+                    )
                     if val is not None:
                         results.append(val)
                 return results
-            finally:
-                await browser.close()
-                await pw.stop()
 
         results = asyncio.run(_run())
         log.info("select_all(%r, %r) → %d result(s)",
@@ -507,22 +447,14 @@ class ScraperFacade:
         * a dict ``{"selector": "...", "attribute": "...", "all": True/False}``
           → full control per field
 
-        Examples::
+        Example::
 
             data = facade.select_many("https://books.toscrape.com/", {
-                "title":       "h1",
-                "price":       "p.price_color",
-                "rating":      {"selector": "p.star-rating", "attribute": "class"},
-                "all_links":   {"selector": "a",  "attribute": "href", "all": True},
-                "paragraphs":  {"selector": "p",  "all": True},
+                "title":     "h1",
+                "price":     "p.price_color",
+                "rating":    {"selector": "p.star-rating", "attribute": "class"},
+                "all_links": {"selector": "a", "attribute": "href", "all": True},
             })
-            # data == {
-            #   "title":      "All products | Books to Scrape ...",
-            #   "price":      "£...",
-            #   "rating":     "star-rating Three",
-            #   "all_links":  ["href1", "href2", ...],
-            #   "paragraphs": ["text1", "text2", ...],
-            # }
 
         Args:
             url:       The page to open.
@@ -532,8 +464,7 @@ class ScraperFacade:
             Dict mapping each label to its result (str, list, or None).
         """
         async def _run():
-            pw, browser, page = await self._open_page(url)
-            try:
+            async with BrowserSession(self._cfg).open(url) as page:
                 output: dict[str, Any] = {}
                 for label, spec in selectors.items():
                     if isinstance(spec, str):
@@ -547,7 +478,11 @@ class ScraperFacade:
                         elements = await page.query_selector_all(css)
                         vals: list[str] = []
                         for el in elements:
-                            v = await el.get_attribute(attr) if attr else (await el.inner_text()).strip()
+                            v = (
+                                await el.get_attribute(attr)
+                                if attr
+                                else (await el.inner_text()).strip()
+                            )
                             if v is not None:
                                 vals.append(v)
                         output[label] = vals
@@ -561,9 +496,6 @@ class ScraperFacade:
                             output[label] = (await el.inner_text()).strip()
 
                 return output
-            finally:
-                await browser.close()
-                await pw.stop()
 
         result = asyncio.run(_run())
         log.info("select_many(%r) → %d field(s)", url, len(result))
@@ -579,33 +511,28 @@ class ScraperFacade:
         Open *url* and extract a specific HTML ``<table>`` as a list of dicts,
         using the first ``<tr>`` as headers.
 
-        Examples::
+        Example::
 
-            rows = facade.select_table("https://en.wikipedia.org/wiki/Python_(programming_language)", "table.wikitable")
-            # [{"Column A": "val", "Column B": "val"}, ...]
-
-            # if there are multiple tables, pick by index
-            second = facade.select_table("https://example.com/stats", "table", index=1)
+            rows = facade.select_table(
+                "https://en.wikipedia.org/wiki/Python_(programming_language)",
+                "table.wikitable",
+            )
 
         Args:
             url:      The page to open.
-            selector: CSS selector that matches ``<table>`` elements
-                      (default ``"table"``).
+            selector: CSS selector that matches ``<table>`` elements (default ``"table"``).
             index:    Which matched table to extract (0-based, default 0).
 
         Returns:
-            List of row dicts (header → cell text).  Empty list if the
-            table or headers are not found.
+            List of row dicts (header → cell text).  Empty list if not found.
         """
         async def _run():
-            pw, browser, page = await self._open_page(url)
-            try:
+            async with BrowserSession(self._cfg).open(url) as page:
                 tables = await page.query_selector_all(selector)
                 if not tables or index >= len(tables):
                     return []
                 table = tables[index]
 
-                # headers from <th> in first row
                 header_els = await table.query_selector_all("tr:first-child th")
                 if not header_els:
                     header_els = await table.query_selector_all("tr:first-child td")
@@ -620,9 +547,6 @@ class ScraperFacade:
                     cell_texts = [(await c.inner_text()).strip() for c in cells]
                     rows_out.append(dict(zip(headers, cell_texts)))
                 return rows_out
-            finally:
-                await browser.close()
-                await pw.stop()
 
         rows = asyncio.run(_run())
         log.info("select_table(%r, %r, index=%d) → %d row(s)",
@@ -640,15 +564,11 @@ class ScraperFacade:
         Pages whose HTML hash matches the stored hash from the previous run
         return ``status="unchanged"`` and are not re-saved to disk/DB.
 
-        Useful for scheduled scrapers: call this every night and only the
-        pages that actually changed will be written.
-
         Args:
             urls: List of URLs to check.
 
         Returns:
-            Run-summary dict.  Check ``summary["unchanged"]`` for the count
-            of pages that were skipped because their content did not change.
+            Run-summary dict.
         """
         original = self._cfg.skip_unchanged
         self._cfg.skip_unchanged = True
@@ -662,7 +582,7 @@ class ScraperFacade:
     def reset_hashes(self) -> None:
         """
         Delete all stored content hashes so the **next** :meth:`detect_changes`
-        (or any run with ``skip_unchanged=True``) treats every page as new.
+        treats every page as new.
 
         The hash file lives at ``<output_dir>/.content_hashes.json``.
         """
@@ -682,17 +602,13 @@ class ScraperFacade:
         Scrape *urls* with **resumable mode forced on**.
 
         URLs already marked as done in ``.checkpoint.json`` are skipped
-        instantly (``status="skipped"``).  Successfully scraped URLs are
-        marked done so a subsequent call won't re-fetch them.
-
-        Ideal for large jobs that may be interrupted mid-run.
+        instantly (``status="skipped"``).
 
         Args:
-            urls: Full list of URLs for the job (already-done ones are skipped).
+            urls: Full list of URLs for the job.
 
         Returns:
-            Run-summary dict.  Check ``summary["skipped"]`` for the count
-            of URLs that were bypassed.
+            Run-summary dict.
         """
         original = self._cfg.resumable
         self._cfg.resumable = True
@@ -707,8 +623,6 @@ class ScraperFacade:
         """
         Erase the checkpoint store so the next :meth:`resume` call re-scrapes
         all URLs from scratch.
-
-        The checkpoint file lives at ``<output_dir>/.checkpoint.json``.
         """
         cp = CheckpointStore(self._cfg.output_dir)
         cp.clear()
@@ -719,11 +633,7 @@ class ScraperFacade:
         Return the current checkpoint state without modifying it.
 
         Returns:
-            dict with keys:
-
-            * ``"done_count"``  — number of URLs already marked done
-            * ``"done_urls"``   — sorted list of those URLs
-            * ``"file"``        — absolute path to ``.checkpoint.json``
+            dict with keys ``"done_count"``, ``"done_urls"``, ``"file"``.
         """
         path = Path(self._cfg.output_dir) / ".checkpoint.json"
         done: list[str] = []
@@ -746,9 +656,6 @@ class ScraperFacade:
         """
         Discover all URLs in the sitemap of *base_url* **without** scraping.
 
-        Discovery order: ``robots.txt`` → ``/sitemap.xml`` fallback.
-        Sitemap index files are expanded recursively.
-
         Args:
             base_url: Root domain URL, e.g. ``"https://example.com"``.
 
@@ -767,26 +674,11 @@ class ScraperFacade:
         """
         Attach a custom :class:`ScrapeObserver` to the event bus.
 
-        The observer receives every event published during a run:
-
-        * ``"run.start"``    — run is starting
-        * ``"run.done"``     — run completed
-        * ``"url.start"``    — browser is visiting a URL
-        * ``"url.success"``  — page scraped successfully
-        * ``"url.error"``    — page failed (after retries)
-        * ``"url.skip"``     — URL skipped (checkpoint or rate-limit)
-
-        Example::
-
-            class MyHook(ScrapeObserver):
-                def on_event(self, event):
-                    print(event.name, event.payload)
-
-            facade.observe(MyHook())
+        Events: ``"run.start"``, ``"run.done"``, ``"url.start"``,
+        ``"url.success"``, ``"url.error"``, ``"url.skip"``.
 
         Args:
-            observer: Any object that subclasses :class:`ScrapeObserver`
-                      and implements ``on_event(event)``.
+            observer: Any object subclassing :class:`ScrapeObserver`.
         """
         self._bus.subscribe(observer)
         log.info("observe: registered %s", type(observer).__name__)
@@ -797,8 +689,7 @@ class ScraperFacade:
         ``ScraperConfig.slow_page_threshold_sec`` (default 10 s).
 
         Returns:
-            List of ``{"url": str, "elapsed_s": float}`` dicts,
-            ordered by the time they were scraped.
+            List of ``{"url": str, "elapsed_s": float}`` dicts.
         """
         return self._slow.slow_pages
 
@@ -808,23 +699,16 @@ class ScraperFacade:
 
     def query_db(self, sql: str, params: tuple = ()) -> list[dict]:
         """
-        Execute a raw SQL **SELECT** against the SQLite backend and return
-        the results as a list of dicts.
+        Execute a raw SQL **SELECT** against the SQLite backend.
 
         Requires ``ScraperConfig(use_sqlite=True)``.
 
-        Example::
-
-            rows = facade.query_db(
-                "SELECT url, http_status FROM pages WHERE http_status != 200"
-            )
-
         Args:
             sql:    A SELECT statement.
-            params: Optional positional parameters (passed to ``con.execute``).
+            params: Optional positional parameters.
 
         Returns:
-            List of row dicts, column-name → value.
+            List of row dicts.
 
         Raises:
             RuntimeError: If SQLite is not enabled in config.
@@ -842,16 +726,7 @@ class ScraperFacade:
         """
         Return every row from the SQLite ``pages`` table as a list of dicts.
 
-        Columns: ``url``, ``filename``, ``timestamp``, ``http_status``,
-                 ``size_bytes``, ``meta_json``, ``html``.
-
         Requires ``ScraperConfig(use_sqlite=True)``.
-
-        Returns:
-            List of page-row dicts.
-
-        Raises:
-            RuntimeError: If SQLite is not enabled.
         """
         return self.query_db(
             "SELECT url, filename, timestamp, http_status, size_bytes "
@@ -860,19 +735,9 @@ class ScraperFacade:
 
     def get_run_history(self) -> list[dict]:
         """
-        Return every row from the SQLite ``runs`` table — one row per
-        completed scrape run — as a list of dicts.
-
-        Columns: ``id``, ``started_at``, ``finished_at``, ``elapsed_s``,
-                 ``total``, ``success``, ``error``.
+        Return every row from the SQLite ``runs`` table, newest first.
 
         Requires ``ScraperConfig(use_sqlite=True)``.
-
-        Returns:
-            List of run-row dicts, newest first.
-
-        Raises:
-            RuntimeError: If SQLite is not enabled.
         """
         return self.query_db(
             "SELECT id, started_at, finished_at, elapsed_s, total, success, error "
@@ -890,9 +755,6 @@ class ScraperFacade:
 
         Returns:
             Absolute path to the written file.
-
-        Raises:
-            RuntimeError: If SQLite is not enabled.
         """
         rows = self.list_saved()
         path = Path(dest)
@@ -910,9 +772,6 @@ class ScraperFacade:
         """
         Return a human-readable summary of the active configuration,
         all enabled features, and library state.
-
-        Useful for debugging or logging what the scraper is set up to do
-        before actually running it.
 
         Returns:
             Dict with sections ``"config"``, ``"features"``, ``"state"``.
